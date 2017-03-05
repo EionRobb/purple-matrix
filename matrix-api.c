@@ -28,6 +28,7 @@
 /* libpurple */
 #include <debug.h>
 #include <ntlm.h>
+#include <libpurple/version.h>
 
 #include "libmatrix.h"
 #include "matrix-json.h"
@@ -104,17 +105,18 @@ typedef struct {
     gchar *content_type;
     gboolean got_headers;
     JsonParser *json_parser;
+    const char *body;
+    size_t body_len;
 } MatrixApiResponseParserData;
 
 
 /** create a MatrixApiResponseParserData */
 static MatrixApiResponseParserData *_response_parser_data_new()
 {
-    MatrixApiResponseParserData *res = g_new(MatrixApiResponseParserData, 1);
+    MatrixApiResponseParserData *res = g_new0(MatrixApiResponseParserData, 1);
     res->header_parsing_state = HEADER_PARSING_STATE_LAST_WAS_VALUE;
     res->current_header_name = g_string_new("");
     res->current_header_value = g_string_new("");
-    res->content_type = NULL;
     res->json_parser = json_parser_new();
     return res;
 }
@@ -220,6 +222,12 @@ static int _handle_body(http_parser *http_parser, const char *at,
             g_error_free(err);
             return 1;
         }
+    } else {
+        /* Well if it's not JSON perhaps the callback is expecting to
+         * handle it itself, e.g. for an image.
+         */
+        response_data->body = at;
+        response_data->body_len = length;
     }
     return 0;
 }
@@ -305,7 +313,9 @@ static void matrix_api_complete(PurpleUtilFetchUrlData *url_data,
         (data->bad_response_callback)(data->conn, data->user_data,
                 response_code, root);
     } else if (data->callback) {
-        (data->callback)(data->conn, data->user_data, root);
+        (data->callback)(data->conn, data->user_data, root,
+                         response_data->body, response_data->body_len,
+                         response_data->content_type );
     }
 
     _response_parser_data_free(response_data);
@@ -390,10 +400,12 @@ static void _parse_url(const gchar *url, const gchar **host, const gchar **path)
  *   - libpurple's purple_url_parse assumes that the path + querystring is
  *     shorter than 256 bytes.
  *
- *  @returns a gchar* which should be freed
+ *  @returns a GString* which should be freed
  */
-static gchar *_build_request(PurpleAccount *acct, const gchar *url,
-        const gchar *method, const gchar *body)
+static GString *_build_request(PurpleAccount *acct, const gchar *url,
+        const gchar *method, const gchar *extra_headers,
+        const gchar *body,
+        const gchar *extra_data, gsize extra_len)
 {
     PurpleProxyInfo *gpi = purple_proxy_get_setup(acct);
     GString *request_str = g_string_new(NULL);
@@ -420,9 +432,11 @@ static gchar *_build_request(PurpleAccount *acct, const gchar *url,
     g_string_append_printf(request_str, "Host: %.*s\r\n",
             (int)(url_path-url_host), url_host);
 
+    if (extra_headers != NULL)
+        g_string_append(request_str, extra_headers);
     g_string_append(request_str, "Connection: close\r\n");
     g_string_append_printf(request_str, "Content-Length: %" G_GSIZE_FORMAT "\r\n",
-            body == NULL ? 0 : strlen(body));
+            extra_len + (body == NULL ? 0 : strlen(body)));
 
     if(using_http_proxy)
         _add_proxy_auth_headers(request_str, gpi);
@@ -431,30 +445,40 @@ static gchar *_build_request(PurpleAccount *acct, const gchar *url,
     if(body != NULL)
         g_string_append(request_str, body);
 
-    return g_string_free(request_str, FALSE);
+    if(extra_data != NULL)
+        g_string_append_len(request_str, extra_data, extra_len);
+
+    return request_str;
 }
 
 
 /**
  * Start an HTTP call to the API
  *
- * @param method  HTTP method (eg "GET")
- * @param body    body of request, or NULL if none
- * @param max_len maximum number of bytes to return from the request. -1 for
- *                default (512K).
+ * @param method      HTTP method (eg "GET")
+ * @param extra_headers  Extra HTTP headers to add
+ * @param body        body of request, or NULL if none
+ * @param extra_data  raw binary data to be sent after the body
+ * @param extra_len   The length of the raw binary data
+ * @param max_len     maximum number of bytes to return from the request. -1 for
+ *                    default (512K).
  *
  * @returns handle for the request, or NULL if the request couldn't be started
  *   (eg, invalid hostname). In this case, the error_callback will have
  *   been called already.
+ * Note: extra_data/extra_len is only available on libpurple >=2.11.0
  */
-static MatrixApiRequestData *matrix_api_start(const gchar *url,
-        const gchar *method, const gchar *body, MatrixConnectionData *conn,
+static MatrixApiRequestData *matrix_api_start_full(const gchar *url,
+        const gchar *method, const gchar *extra_headers,
+        const gchar *body,
+        const gchar *extra_data, gsize extra_len,
+        MatrixConnectionData *conn,
         MatrixApiCallback callback, MatrixApiErrorCallback error_callback,
         MatrixApiBadResponseCallback bad_response_callback,
         gpointer user_data, gssize max_len)
 {
     MatrixApiRequestData *data;
-    gchar *request;
+    GString *request;
     PurpleUtilFetchUrlData *purple_data;
 
     if (error_callback == NULL)
@@ -472,10 +496,21 @@ static MatrixApiRequestData *matrix_api_start(const gchar *url,
         return NULL;
     }
 
-    request = _build_request(conn->pc->account, url, method, body);
+#if !PURPLE_VERSION_CHECK(2,11,0)
+    if (extra_len) {
+        gchar *error_msg;
+        error_msg = g_strdup_printf(_("Feature not available on old purple version"));
+        error_callback(conn, user_data, error_msg);
+        g_free(error_msg);
+        return NULL;
+    }
+#endif
+
+    request = _build_request(conn->pc->account, url, method, extra_headers,
+                             body, extra_data, extra_len);
 
     if(purple_debug_is_unsafe())
-        purple_debug_info("matrixprpl", "request %s\n", request);
+        purple_debug_info("matrixprpl", "request %s\n", request->str);
 
 
     data = g_new0(MatrixApiRequestData, 1);
@@ -485,10 +520,19 @@ static MatrixApiRequestData *matrix_api_start(const gchar *url,
     data->bad_response_callback = bad_response_callback;
     data->user_data = user_data;
 
+#if PURPLE_VERSION_CHECK(2,11,0)
+    purple_data = purple_util_fetch_url_request_data_len_with_account(
+            conn -> pc -> account,
+            url, FALSE, NULL, TRUE, request->str, request->len,
+            TRUE, max_len, matrix_api_complete,
+            data);
+#else
     purple_data = purple_util_fetch_url_request_len_with_account(
             conn -> pc -> account,
-            url, FALSE, NULL, TRUE, request, TRUE, max_len, matrix_api_complete,
+            url, FALSE, NULL, TRUE, request->str, TRUE,
+            max_len, matrix_api_complete,
             data);
+#endif
 
     if(purple_data == NULL) {
         /* we couldn't start the request. In this case, our callback will
@@ -499,8 +543,34 @@ static MatrixApiRequestData *matrix_api_start(const gchar *url,
         data->purple_data = purple_data;
     }
 
-    g_free(request);
+    g_string_free(request, TRUE);
     return data;
+}
+
+
+/**
+ * Start an HTTP call to the API; lighter version of matrix_api_start_full
+ * since most callers don't need the extras.
+ *
+ * @param method      HTTP method (eg "GET")
+ * @param body        body of request, or NULL if none
+ * @param max_len     maximum number of bytes to return from the request. -1 for
+ *                    default (512K).
+ *
+ * @returns handle for the request, or NULL if the request couldn't be started
+ *   (eg, invalid hostname). In this case, the error_callback will have
+ *   been called already.
+ */
+static MatrixApiRequestData *matrix_api_start(const gchar *url,
+        const gchar *method, const gchar *body,
+        MatrixConnectionData *conn,
+        MatrixApiCallback callback, MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data, gssize max_len)
+{
+    return matrix_api_start_full(url, method, NULL, body, NULL, 0, conn,
+            callback, error_callback, bad_response_callback,
+            user_data, max_len);
 }
 
 
@@ -647,6 +717,47 @@ MatrixApiRequestData *matrix_api_send(MatrixConnectionData *conn,
     return fetch_data;
 }
 
+void matrix_api_invite_user(MatrixConnectionData *conn,
+        const gchar *room_id,
+        const gchar *who,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data)
+{
+    GString *url;
+    JsonNode *body_node;
+    JsonGenerator *generator;
+    gchar *json;
+
+    JsonObject *invitee;
+    invitee = json_object_new();
+    json_object_set_string_member(invitee, "user_id", who);
+
+    url = g_string_new(conn->homeserver);
+    g_string_append(url, "_matrix/client/r0/rooms/");
+    g_string_append(url, purple_url_encode(room_id));
+    g_string_append(url, "/invite?access_token=");
+    g_string_append(url, purple_url_encode(conn->access_token));
+
+    body_node = json_node_new(JSON_NODE_OBJECT);
+    json_node_set_object(body_node, invitee);
+
+    generator = json_generator_new();
+    json_generator_set_root(generator, body_node);
+    json = json_generator_to_data(generator, NULL);
+    g_object_unref(G_OBJECT(generator));
+    json_node_free(body_node);
+
+    purple_debug_info("matrixprpl", "sending an invite on %s\n", room_id);
+
+    matrix_api_start(url->str, "POST", json, conn, callback,
+            error_callback, bad_response_callback,
+            user_data, 0);
+    g_free(json);
+    g_string_free(url, TRUE);
+    json_object_unref(invitee);
+}
 
 MatrixApiRequestData *matrix_api_join_room(MatrixConnectionData *conn,
         const gchar *room,
@@ -701,6 +812,122 @@ MatrixApiRequestData *matrix_api_leave_room(MatrixConnectionData *conn,
     return fetch_data;
 }
 
+/**
+ * Upload a file
+ *
+ * @param conn             The connection with which to make the request
+ * @param ctype            Content type of file
+ * @param data             Raw data content of file
+ * @param data_len         Length of the data
+ * @param callback         Function to be called when the request completes
+ * @param user_data        Opaque data to be passed to the callback
+ */
+MatrixApiRequestData *matrix_api_upload_file(MatrixConnectionData *conn,
+        const gchar *ctype, const gchar *data, gsize data_len,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data)
+{
+    GString *url, *extra_header;
+    MatrixApiRequestData *fetch_data;
+
+    url = g_string_new(conn->homeserver);
+    g_string_append(url, "/_matrix/media/r0/upload");
+    g_string_append(url, "?access_token=");
+    g_string_append(url, purple_url_encode(conn->access_token));
+
+    extra_header = g_string_new("Content-Type: ");
+    g_string_append(extra_header, ctype);
+    g_string_append(extra_header, "\r\n");
+
+    fetch_data = matrix_api_start_full(url->str, "POST", extra_header->str, "",
+            data, data_len, conn,
+            callback, error_callback, bad_response_callback, user_data, 0);
+    g_string_free(url, TRUE);
+    g_string_free(extra_header, TRUE);
+
+    return fetch_data;
+}
+
+/**
+ * Download a file
+ * @param uri       URI string in the form mxc://example.com/unique
+ */
+MatrixApiRequestData *matrix_api_download_file(MatrixConnectionData *conn,
+        const gchar *uri,
+        gsize max_size,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data)
+{
+    GString *url;
+    MatrixApiRequestData *fetch_data;
+
+    /* Sanity check the uri - TODO: Add more sanity */
+    if (strncmp(uri, "mxc://", 6)) {
+        error_callback(conn, user_data, "bad media uri");
+        return NULL;
+    }
+    url = g_string_new(conn->homeserver);
+    g_string_append(url, "/_matrix/media/r0/download/");
+    g_string_append(url, uri + 6); /* i.e. after the mxc:// */
+    g_string_append(url, "?access_token=");
+    g_string_append(url, purple_url_encode(conn->access_token));
+
+    /* I'd like to validate the headers etc a bit before downloading the
+     * data (maybe using _handle_header_completed), also I'm not convinced
+     * purple always does sane things on over-size.
+     */
+    fetch_data = matrix_api_start(url->str, "GET", NULL, conn, callback,
+            error_callback, bad_response_callback, user_data, max_size);
+    g_string_free(url, TRUE);
+
+    return fetch_data;
+}
+
+/**
+ * Download a thumbnail for a file
+ * @param uri       URI string in the form mxc://example.com/unique
+ */
+MatrixApiRequestData *matrix_api_download_thumb(MatrixConnectionData *conn,
+        const gchar *uri,
+        gsize max_size,
+        unsigned int width, unsigned int height, gboolean scale,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data)
+{
+    GString *url;
+    MatrixApiRequestData *fetch_data;
+    char tmp[64];
+
+    /* Sanity check the uri - TODO: Add more sanity */
+    if (strncmp(uri, "mxc://", 6)) {
+        error_callback(conn, user_data, "bad media uri");
+        return NULL;
+    }
+    url = g_string_new(conn->homeserver);
+    g_string_append(url, "_matrix/media/r0/thumbnail/");
+    g_string_append(url, uri + 6); /* i.e. after the mxc:// */
+    sprintf(tmp, "?width=%u", width);
+    g_string_append(url, tmp);
+    sprintf(tmp, "&height=%u", height);
+    g_string_append(url, tmp);
+    g_string_append(url, scale ? "&method=scale": "&method=crop");
+
+    /* I'd like to validate the headers etc a bit before downloading the
+     * data (maybe using _handle_header_completed), also I'm not convinced
+     * purple always does sane things on over-size.
+     */
+    fetch_data = matrix_api_start(url->str, "GET", NULL, conn, callback,
+            error_callback, bad_response_callback, user_data, max_size);
+    g_string_free(url, TRUE);
+
+    return fetch_data;
+}
 
 #if 0
 MatrixApiRequestData *matrix_api_get_room_state(MatrixConnectionData *conn,

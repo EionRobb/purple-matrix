@@ -19,6 +19,7 @@
 #include "matrix-room.h"
 
 /* stdlib */
+#include <inttypes.h>
 #include <string.h>
 
 /* libpurple */
@@ -36,6 +37,7 @@
 
 static gchar *_get_room_name(MatrixConnectionData *conn,
         PurpleConversation *conv);
+static const gchar *_get_my_display_name(PurpleConversation *conv);
 
 static MatrixConnectionData *_get_connection_data_from_conversation(
         PurpleConversation *conv)
@@ -68,6 +70,8 @@ static MatrixConnectionData *_get_connection_data_from_conversation(
 #define PURPLE_CONV_FLAGS "flags"
 #define PURPLE_CONV_FLAG_NEEDS_NAME_UPDATE 0x1
 
+/* Arbitrary limit on the size of an image to receive; should make configurable */
+static const size_t purple_max_image_size=250*1024;
 
 /**
  * Get the member table for a room
@@ -299,7 +303,8 @@ static GList *_get_event_queue(PurpleConversation *conv)
 }
 
 static void _event_send_complete(MatrixConnectionData *account, gpointer user_data,
-      JsonNode *json_root)
+      JsonNode *json_root,
+      const char *raw_body, size_t raw_body_len, const char *content_type)
 {
     PurpleConversation *conv = user_data;
     JsonObject *response_object;
@@ -351,6 +356,330 @@ void _event_send_bad_response(MatrixConnectionData *ma, gpointer user_data,
     /* for now, we leave the message queued. We should consider retrying. */
 }
 
+/**************************** Image handling *********************************/
+/* Data structure passed from the event hook to the upload completion */
+struct SendImageEventData {
+    PurpleConversation *conv;
+    MatrixRoomEvent *event;
+    int imgstore_id;
+};
+
+/**
+ * Called back by matrix_api_upload_file after the image is uploaded.
+ * We get a 'content_uri' identifying the uploaded file, and that's what
+ * we put in the event.
+ */
+static void _image_upload_complete(MatrixConnectionData *ma,
+      gpointer user_data, JsonNode *json_root,
+      const char *raw_body, size_t raw_body_len, const char *content_type)
+{
+    MatrixApiRequestData *fetch_data = NULL;
+    struct SendImageEventData *sied = user_data;
+    JsonObject *response_object = matrix_json_node_get_object(json_root);
+    const gchar *content_uri;
+    PurpleStoredImage *image = purple_imgstore_find_by_id(sied->imgstore_id);
+
+    content_uri = matrix_json_object_get_string_member(response_object,
+            "content_uri");
+    if (content_uri == NULL) {
+        matrix_api_error(ma, sied->conv,
+                "image_upload_complete: no content_uri");
+        purple_imgstore_unref(image);
+        g_free(sied);
+        return;
+    }
+
+    json_object_set_string_member(sied->event->content, "url", content_uri);
+
+    fetch_data = matrix_api_send(ma, sied->conv->name, sied->event->event_type,
+             sied->event->txn_id, sied->event->content, _event_send_complete,
+             _event_send_error, _event_send_bad_response, sied->conv);
+    purple_conversation_set_data(sied->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+                    fetch_data);
+    purple_imgstore_unref(image);
+    g_free(sied);
+}
+
+static void _image_upload_bad_response(MatrixConnectionData *ma, gpointer user_data,
+            int http_response_code, JsonNode *json_root)
+{
+    struct SendImageEventData *sied = user_data;
+    PurpleStoredImage *image = purple_imgstore_find_by_id(sied->imgstore_id);
+
+    matrix_api_bad_response(ma, sied->conv, http_response_code, json_root);
+    purple_imgstore_unref(image);
+    purple_conversation_set_data(sied->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+            NULL);
+    g_free(sied);
+    /* More clear up with the message? */
+}
+
+void _image_upload_error(MatrixConnectionData *ma, gpointer user_data,
+            const gchar *error_message)
+{
+    struct SendImageEventData *sied = user_data;
+    PurpleStoredImage *image = purple_imgstore_find_by_id(sied->imgstore_id);
+
+    matrix_api_error(ma, sied->conv, error_message);
+    purple_imgstore_unref(image);
+    purple_conversation_set_data(sied->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+            NULL);
+    g_free(sied);
+    /* More clear up with the message? */
+}
+
+/**
+ * Return a mimetype based on some info; this should get replaced
+ * with a glib/gio/gcontent_type_guess call if we can include it,
+ * all other plugins do this manually.
+ */
+static const char *type_guess(PurpleStoredImage *image)
+{
+    /* Copied off the code in libpurple's jabber module */
+    const char *ext = purple_imgstore_get_extension(image);
+
+    if (strcmp(ext, "png") == 0) {
+      return "image/png";
+    } else if (strcmp(ext, "gif") == 0) {
+      return "image/gif";
+    } else if (strcmp(ext, "jpg") == 0) {
+      return "image/jpeg";
+    } else if (strcmp(ext, "tif") == 0) {
+      return "image/tif";
+    } else {
+      return "image/x-icon"; /* or something... */
+    }
+}
+
+/**
+ * Check if the declared content-type is an image type we recognise.
+ */
+static gboolean is_known_image_type(const char *content_type)
+{
+    return !strcmp(content_type, "image/png") ||
+           !strcmp(content_type, "image/jpeg") ||
+           !strcmp(content_type, "image/gif") ||
+           !strcmp(content_type, "image/tiff");
+}
+
+/* Structure hung off the event and used by _send_image_hook */
+struct SendImageHookData {
+    PurpleConversation *conv;
+    int imgstore_id;
+};
+/**
+ * Called back by _send_queued_event for an image.
+ */
+static void _send_image_hook(MatrixRoomEvent *event, gboolean just_free)
+{
+    MatrixApiRequestData *fetch_data;
+    struct SendImageHookData *sihd = event->hook_data;
+    /* Free'd by the callbacks from upload_file */
+    struct SendImageEventData *sied = g_new0(struct SendImageEventData, 1);
+    PurpleConnection *pc;
+    MatrixConnectionData *acct;
+    int imgstore_id;
+    PurpleStoredImage *image;
+    size_t imgsize;
+    const char *filename;
+    const char *ctype;
+    gconstpointer imgdata;
+
+    if (just_free) {
+        g_free(event->hook_data);
+        return;
+    }
+
+    pc = sihd->conv->account->gc;
+    acct = purple_connection_get_protocol_data(pc);
+    imgstore_id = sihd->imgstore_id;
+    image = purple_imgstore_find_by_id(imgstore_id);
+    if (!image)
+        return;
+
+    imgsize = purple_imgstore_get_size(image);
+    filename = purple_imgstore_get_filename(image);
+    imgdata = purple_imgstore_get_data(image);
+    ctype = type_guess(image);
+
+    purple_debug_info("matrixprpl", "%s: image id %d for %s (type: %s)\n",
+            __func__,
+            sihd->imgstore_id, filename, ctype);
+
+    sied->conv = sihd->conv;
+    sied->imgstore_id = sihd->imgstore_id;
+    sied->event = event;
+    json_object_set_string_member(event->content, "body", filename);
+
+    fetch_data = matrix_api_upload_file(acct, ctype, imgdata, imgsize,
+                           _image_upload_complete,
+                           _image_upload_error,
+                           _image_upload_bad_response, sied);
+    if (fetch_data) {
+        purple_conversation_set_data(sied->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+                fetch_data);
+    }
+}
+
+/* Passed through matrix_api_download_file all the way
+ * downto _image_download_complete
+ */
+struct ReceiveImageData {
+    PurpleConversation *conv;
+    gint64 timestamp;
+    const gchar *room_id;
+    const gchar *sender_display_name;
+    gchar *original_body;
+};
+
+static void _image_download_complete(MatrixConnectionData *ma,
+          gpointer user_data, JsonNode *json_root,
+          const char *raw_body, size_t raw_body_len, const char *content_type)
+{
+    struct ReceiveImageData *rid = user_data;
+    if (is_known_image_type(content_type)) {
+        /* Excellent - something to work with */
+        int img_id = purple_imgstore_add_with_id(g_memdup(raw_body, raw_body_len),
+                                                 raw_body_len, NULL);
+        serv_got_chat_in(rid->conv->account->gc, g_str_hash(rid->room_id), rid->sender_display_name,
+                PURPLE_MESSAGE_RECV | PURPLE_MESSAGE_IMAGES,
+                g_strdup_printf("<IMG ID=\"%d\">", img_id), rid->timestamp / 1000);
+    } else {
+        serv_got_chat_in(rid->conv->account->gc, g_str_hash(rid->room_id),
+                rid->sender_display_name, PURPLE_MESSAGE_RECV,
+                g_strdup_printf("%s (unknown type %s)",
+                        rid->original_body, content_type), rid->timestamp / 1000);
+    }
+    purple_conversation_set_data(rid->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+            NULL);
+    g_free(rid->original_body);
+    g_free(rid);
+}
+
+static void _image_download_bad_response(MatrixConnectionData *ma, gpointer user_data,
+                int http_response_code, JsonNode *json_root)
+{
+    struct ReceiveImageData *rid = user_data;
+    gchar *escaped_body = purple_markup_escape_text(rid->original_body, -1);
+    serv_got_chat_in(rid->conv->account->gc, g_str_hash(rid->room_id),
+            rid->sender_display_name, PURPLE_MESSAGE_RECV,
+            g_strdup_printf("%s (failed to download %d)",
+                    escaped_body, http_response_code),
+                    rid->timestamp / 1000);
+    purple_conversation_set_data(rid->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+            NULL);
+    g_free(escaped_body);
+    g_free(rid->original_body);
+    g_free(rid);
+}
+
+static void _image_download_error(MatrixConnectionData *ma, gpointer user_data,
+                const gchar *error_message)
+{
+    struct ReceiveImageData *rid = user_data;
+    gchar *escaped_body = purple_markup_escape_text(rid->original_body, -1);
+    serv_got_chat_in(rid->conv->account->gc, g_str_hash(rid->room_id),
+            rid->sender_display_name, PURPLE_MESSAGE_RECV,
+            g_strdup_printf("%s (failed to download %s)",
+                    escaped_body, error_message), rid->timestamp / 1000);
+    purple_conversation_set_data(rid->conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+            NULL);
+    g_free(escaped_body);
+    g_free(rid->original_body);
+    g_free(rid);
+}
+
+
+/*
+ * Called from matrix_room_handle_timeline_event when it finds an m.image;
+ * msg_body has the fallback text,
+ * json_content_object has the json for the content sub object
+ *
+ * Return TRUE if we managed to download the image and everything needed
+ *        FALSE if we failed; caller does fallback.
+ */
+static gboolean _handle_incoming_image(PurpleConversation *conv,
+        const gint64 timestamp, const gchar *room_id,
+        const gchar *sender_display_name, const gchar *msg_body,
+        JsonObject *json_content_object) {
+    MatrixConnectionData *conn = _get_connection_data_from_conversation(conv);
+    MatrixApiRequestData *fetch_data = NULL;
+    struct ReceiveImageData *rid;
+    gboolean use_thumb = FALSE;
+
+    const gchar *url;
+    JsonObject *json_info_object;
+
+    url = matrix_json_object_get_string_member(json_content_object, "url");
+    if (!url) {
+        /* That seems odd, oh well, no point in getting upset */
+        purple_debug_info("matrixprpl", "failed to get url for m.image");
+        return FALSE;
+    }
+
+    /* the 'info' member is optional but if we've got it we can check it to early
+     * reject the image if it's something that's huge or we don't know the title.
+     */
+    json_info_object = matrix_json_object_get_object_member(json_content_object,
+            "info");
+    purple_debug_info("matrixprpl", "%s: %s json_info_object=%p\n", __func__,
+            url, json_info_object);
+    if (json_info_object) {
+        guint64 size;
+        const gchar *mime_type;
+
+        /* OK, we've got some (optional) info on the image */
+        size = matrix_json_object_get_int_member(json_info_object, "size");
+        if (size > purple_max_image_size) {
+            use_thumb = TRUE;
+        }
+        mime_type = matrix_json_object_get_string_member(json_info_object,
+                        "mimetype");
+        if (mime_type) {
+            if (!is_known_image_type(mime_type)) {
+                purple_debug_info("matrixprpl", "%s: unknown mimetype %s",
+                        __func__, mime_type);
+                return FALSE;
+            }
+        }
+        purple_debug_info("matrixprpl", "image info good: %s of %" PRId64,
+                          mime_type, size);
+    }
+
+    rid = g_new0(struct ReceiveImageData, 1);
+    rid->conv = conv;
+    rid->timestamp = timestamp;
+    rid->sender_display_name = sender_display_name;
+    rid->room_id = room_id;
+    rid->original_body = g_strdup(msg_body);
+
+    if (!use_thumb) {
+            fetch_data = matrix_api_download_file(conn, url,
+                    purple_max_image_size,
+                    _image_download_complete,
+                    _image_download_error,
+                    _image_download_bad_response, rid);
+    } else {
+            /* TODO: Configure the size of thumbnails, and provide
+             * a way for the user to get the full image if they want.
+             * 640x480 is a good a width as any and reasonably likely to
+             * fit in the byte size limit unless someone has a big long
+             * tall png.
+             */
+            fetch_data = matrix_api_download_thumb(conn, url,
+                    purple_max_image_size,
+                    640, 480, TRUE, /* Scaled */
+                    _image_download_complete,
+                    _image_download_error,
+                    _image_download_bad_response, rid);
+    }
+
+    purple_conversation_set_data(conv, PURPLE_CONV_DATA_ACTIVE_SEND,
+            fetch_data);
+
+    return fetch_data != NULL;
+}
+
 /**
  * send the next queued event, provided the connection isn't shutting down.
  *
@@ -376,6 +705,9 @@ static void _send_queued_event(PurpleConversation *conv)
     } else {
         event = queue -> data;
         g_assert(event != NULL);
+        if (event->hook)
+            return event->hook(event, FALSE);
+
         purple_debug_info("matrixprpl", "Sending %s with txn id %s\n",
                 event->event_type, event->txn_id);
 
@@ -390,7 +722,8 @@ static void _send_queued_event(PurpleConversation *conv)
 
 
 static void _enqueue_event(PurpleConversation *conv, const gchar *event_type,
-        JsonObject *event_content)
+        JsonObject *event_content,
+        EventSendHook hook, void *hook_data)
 {
     MatrixRoomEvent *event;
     GList *event_queue;
@@ -399,6 +732,8 @@ static void _enqueue_event(PurpleConversation *conv, const gchar *event_type,
     event = matrix_event_new(event_type, event_content);
     event->txn_id = g_strdup_printf("%"G_GINT64_FORMAT"%"G_GUINT32_FORMAT,
             g_get_monotonic_time(), g_random_int());
+    event->hook = hook;
+    event->hook_data = hook_data;
 
     event_queue = _get_event_queue(conv);
     event_queue = g_list_append(event_queue, event);
@@ -445,8 +780,11 @@ void matrix_room_handle_timeline_event(PurpleConversation *conv,
     gint64 timestamp;
     JsonObject *json_content_obj;
     JsonObject *json_unsigned_obj;
-    const gchar *room_id, *msg_body;
+    const gchar *room_id, *msg_body, *msg_type;
+    gchar *tmp_body = NULL;
+    gchar *escaped_body = NULL;
     PurpleMessageFlags flags;
+
     const gchar *sender_display_name;
     MatrixRoomMember *sender = NULL;
 
@@ -477,6 +815,12 @@ void matrix_room_handle_timeline_event(PurpleConversation *conv,
         return;
     }
 
+    msg_type = matrix_json_object_get_string_member(json_content_obj, "msgtype");
+    if(msg_type == NULL) {
+        purple_debug_warning("matrixprpl", "no msgtype in message event\n");
+        return;
+    }
+
     json_unsigned_obj = matrix_json_object_get_object_member(json_event_obj,
             "unsigned");
     transaction_id = matrix_json_object_get_string_member(json_unsigned_obj,
@@ -502,12 +846,24 @@ void matrix_room_handle_timeline_event(PurpleConversation *conv,
         sender_display_name = "<unknown>";
     }
 
+    if (!strcmp(msg_type, "m.emote")) {
+        tmp_body = g_strdup_printf("/me %s", msg_body);
+    } else if (!strcmp(msg_type, "m.image")) {
+        if (_handle_incoming_image(conv, timestamp, room_id, sender_display_name,
+                    msg_body, json_content_obj)) {
+            return;
+        }
+        /* Fall through - we couldn't get the image, treat as text */
+    }
     flags = PURPLE_MESSAGE_RECV;
 
+    escaped_body = purple_markup_escape_text(tmp_body ? tmp_body : msg_body, -1);
+    g_free(tmp_body);
     purple_debug_info("matrixprpl", "got message from %s in %s\n", sender_id,
             room_id);
     serv_got_chat_in(conv->account->gc, g_str_hash(room_id),
-            sender_display_name, flags, msg_body, timestamp / 1000);
+            sender_display_name, flags, escaped_body, timestamp / 1000);
+    g_free(escaped_body);
 }
 
 
@@ -773,22 +1129,101 @@ static const gchar *_get_my_display_name(PurpleConversation *conv)
 }
 
 /**
+ * Send an image message in a room
+ */
+void matrix_room_send_image(PurpleConversation *conv, int imgstore_id,
+        const gchar *message)
+{
+    JsonObject *content;
+    struct SendImageHookData *sihd;
+
+    if (!imgstore_id)
+        return;
+    /* This is the hook_data on the event, it gets free'd by the event
+     * code when the event is free'd
+     */
+    sihd = g_new0(struct SendImageHookData, 1);
+
+    /* We can't send this event until we've uploaded the image because
+     * the event contents including the file ID that we get back from
+     * the upload process.
+     * Our hook gets called back when we're ready to send the event,
+     * then we do the upload.
+     */
+    content = json_object_new();
+    json_object_set_string_member(content, "msgtype", "m.image");
+
+    sihd->imgstore_id = imgstore_id;
+    sihd->conv = conv;
+    purple_debug_info("matrixprpl", "%s: image id=%d\n", __func__, imgstore_id);
+    _enqueue_event(conv, "m.room.message", content, _send_image_hook, sihd);
+    json_object_unref(content);
+    purple_conv_chat_write(PURPLE_CONV_CHAT(conv), _get_my_display_name(conv),
+            message, PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_IMAGES,
+            g_get_real_time()/1000/1000);
+}
+
+/**
  * Send a message in a room
  */
 void matrix_room_send_message(PurpleConversation *conv, const gchar *message)
 {
     JsonObject *content;
     PurpleConvChat *chat = PURPLE_CONV_CHAT(conv);
+    const char *type_string = "m.text";
+    const char *image_start, *image_end;
+    gchar *message_to_send;
+    GData *image_attribs;
+
+    /* Matrix doesn't have messages that have both images and text in, so
+     * we have to split this message if it has an image.
+     */
+    if (purple_markup_find_tag("img", message,
+                               &image_start,
+                               &image_end,
+                               &image_attribs)) {
+        int imgstore_id = atoi(g_datalist_get_data(&image_attribs, "id"));
+        gchar *image_message;
+        purple_imgstore_ref_by_id(imgstore_id);
+
+        if (image_start != message) {
+            gchar *prefix = g_strndup(message, image_start - message);
+            matrix_room_send_message(conv, prefix);
+            g_free(prefix);
+        }
+
+        image_message = g_strndup(image_start, 1+(image_end-image_start));
+        matrix_room_send_image(conv, imgstore_id, image_message);
+        g_datalist_clear(&image_attribs);
+        g_free(image_message);
+
+        /* Anything after the image? */
+        if (image_end[1]) {
+            matrix_room_send_message(conv, image_end + 1);
+        }
+        return;
+    }
+
+    /* Matrix messages are JSON-encoded, so there's no need to HTML/XML-
+     * escape the message body. Matrix clients don't unescape the bodies
+     * either, so they end up seeing &quot; instead of "
+     */
+    message_to_send = purple_unescape_html(message);
+
+    if (purple_message_meify(message_to_send, -1)) {
+        type_string = "m.emote";
+    }
 
     content = json_object_new();
-    json_object_set_string_member(content, "msgtype", "m.text");
-    json_object_set_string_member(content, "body", message);
+    json_object_set_string_member(content, "msgtype", type_string);
+    json_object_set_string_member(content, "body", message_to_send);
 
-    _enqueue_event(conv, "m.room.message", content);
+    _enqueue_event(conv, "m.room.message", content, NULL, NULL);
     json_object_unref(content);
 
     purple_conv_chat_write(chat, _get_my_display_name(conv),
             message, PURPLE_MESSAGE_SEND, g_get_real_time()/1000/1000);
+    g_free(message_to_send);
 }
 
 /* ************************************************************************** */

@@ -55,10 +55,17 @@ typedef struct _MatrixApiRequestData MatrixApiRequestData;
  * @param json_root     NULL if there was no body, or it could not be
  *                          parsed as JSON; otherwise the root of the JSON
  *                          tree in the response
+ * @param body          NULL if the body was parsable as JSON, else the raw
+ *                          body.
+ * @param body_len      The length of the body (valid when body is)
+ *
+ * @param content_type  The content type of the body
  */
 typedef void (*MatrixApiCallback)(MatrixConnectionData *conn,
                                   gpointer user_data,
-                                  struct _JsonNode *json_root);
+                                  struct _JsonNode *json_root,
+                                  const char *body,
+                                  size_t body_len, const char *content_type);
 
 /**
  * Signature for functions which are called when there is an error calling the
@@ -182,6 +189,30 @@ MatrixApiRequestData *matrix_api_send(MatrixConnectionData *conn,
         MatrixApiBadResponseCallback bad_response_callback,
         gpointer user_data);
 
+/**
+ * Invite a user to a room
+ *
+ * @param conn             The connection with which to make the request
+ * @param room_id          The room id to invite the user to
+ *
+ * @param who              The mxid of the person to invite
+ *
+ * @param callback         Function to be called when the request completes
+ * @param error_callback   Function to be called if there is an error making
+ *                             the request. If NULL, matrix_api_error will be
+ *                             used.
+ * @param bad_response_callback Function to be called if the API gives a non-200
+ *                            response. If NULL, matrix_api_bad_response will be
+ *                            used.
+ * @param user_data        Opaque data to be passed to the callbacks
+ */
+void matrix_api_invite_user(MatrixConnectionData *conn,
+        const gchar *room_id,
+        const gchar *who,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data);
 
 /**
  * Make a request to join a room
@@ -226,6 +257,77 @@ MatrixApiRequestData *matrix_api_leave_room(MatrixConnectionData *conn,
         MatrixApiBadResponseCallback bad_response_callback,
         gpointer user_data);
 
+
+/**
+ * Upload a file
+ *
+ * @param conn             The connection with which to make the request
+ * @param ctype            Content type of file
+ * @param data             Raw data content of file
+ * @param data_len         Length of the data
+ * @param callback         Function to be called when the request completes
+ * @param user_data        Opaque data to be passed to the callback
+ */
+MatrixApiRequestData *matrix_api_upload_file(MatrixConnectionData *conn,
+        const gchar *ctype,
+        const gchar *data,
+        gsize data_len,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data);
+
+/**
+ * Download a file
+ *
+ * @param conn             The connection with which to make the request
+ * @param uri              The Matrix uri to fetch starting mxc://
+ * @param max_size         A maximum size of file to receive.
+ * @param callback         Function to be called when the request completes
+ * @param error_callback   Function to be called if there is an error making
+ *                             the request. If NULL, matrix_api_error will be
+ *                             used.
+ * @param bad_response_callback Function to be called if the API gives a non-200
+ *                            response. If NULL, matrix_api_bad_response will be
+ *                            used.
+ * @param user_data        Opaque data to be passed to the callbacks
+ *
+ */
+MatrixApiRequestData *matrix_api_download_file(MatrixConnectionData *conn,
+        const gchar *uri,
+        gsize max_size,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data);
+
+/**
+ * Download a thumbnail for a file
+ *
+ * @param conn             The connection with which to make the request
+ * @param uri              The Matrix uri to fetch starting mxc://
+ * @param max_size         A maximum size of file to receive.
+ * @param width            Desired width; the server might not obey
+ * @param height           Desired height; the server might not obey
+ * @param scale            True to scale, false to crop
+ * @param callback         Function to be called when the request completes
+ * @param error_callback   Function to be called if there is an error making
+ *                             the request. If NULL, matrix_api_error will be
+ *                             used.
+ * @param bad_response_callback Function to be called if the API gives a non-200
+ *                            response. If NULL, matrix_api_bad_response will be
+ *                            used.
+ * @param user_data        Opaque data to be passed to the callbacks
+ *
+ */
+MatrixApiRequestData *matrix_api_download_thumb(MatrixConnectionData *conn,
+        const gchar *uri,
+        gsize max_size,
+        unsigned int width, unsigned int height, gboolean scale,
+        MatrixApiCallback callback,
+        MatrixApiErrorCallback error_callback,
+        MatrixApiBadResponseCallback bad_response_callback,
+        gpointer user_data);
 
 #if 0
 /**
