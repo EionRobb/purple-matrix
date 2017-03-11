@@ -1237,7 +1237,7 @@ static void _roomlist_parse_chunk(JsonArray *chunk_array, guint chunk_idx,
 	PurpleRoomlistRoom *room;
     JsonObject *chunk_obj;
 	const gchar *room_id;
-	GString *aliases_str;
+	GString *aliases_str = g_string_new(NULL);
 	JsonArray *aliases;
 	gint index, length;
 	gint num_joined_members;
@@ -1254,7 +1254,6 @@ static void _roomlist_parse_chunk(JsonArray *chunk_array, guint chunk_idx,
 	
 	aliases = matrix_json_object_get_array_member(chunk_obj, "aliases");
 	if (aliases != NULL) {
-		aliases_str = g_string_new(NULL);
 		length = json_array_get_length(aliases);
 		for(index = 0; index < length; index++) {
 			const gchar *alias = json_array_get_string_element(aliases, index);
@@ -1277,7 +1276,10 @@ static void _roomlist_parse_chunk(JsonArray *chunk_array, guint chunk_idx,
 }
 
 static void _roomlist_got_list(MatrixConnectionData *conn,
-        gpointer user_data, JsonNode *json_root)
+                                  gpointer user_data,
+                                  struct _JsonNode *json_root,
+                                  const char *body,
+                                  size_t body_len, const char *content_type)
 {
 	PurpleRoomlist *roomlist = user_data;
 	JsonObject *rooms;
