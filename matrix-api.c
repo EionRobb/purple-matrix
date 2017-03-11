@@ -82,7 +82,7 @@ void matrix_api_bad_response(MatrixConnectionData *ma, gpointer user_data,
     }
 
     purple_connection_error_reason(ma->pc,
-            PURPLE_CONNECTION_ERROR_OTHER_ERROR,
+            PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
             error_message);
 
     g_free(error_message);
