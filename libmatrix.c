@@ -103,6 +103,8 @@ void matrixprpl_login(PurpleAccount *acct)
     matrix_connection_new(pc);
     matrix_connection_start_login(pc);
     
+	pc->flags |= PURPLE_CONNECTION_HTML;
+	
     purple_signal_connect(purple_conversations_get_handle(), "chat-conversation-typing", 
         acct, PURPLE_CALLBACK(matrixprpl_conv_send_typing), pc);
 }
