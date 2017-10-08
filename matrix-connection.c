@@ -117,9 +117,11 @@ static void _sync_complete(MatrixConnectionData *ma, gpointer user_data,
                 "Couldn't parse sync response");
         return;
     }
-
-    purple_connection_update_progress(pc, _("Connected"), 2, 3);
-    purple_connection_set_state(pc, PURPLE_CONNECTED);
+    
+	if (purple_connection_get_state(pc) != PURPLE_CONNECTED) {
+        purple_connection_update_progress(pc, _("Connected"), 2, 3);
+        purple_connection_set_state(pc, PURPLE_CONNECTED);
+    }
 
     matrix_sync_parse(pc, body, &next_batch);
 
