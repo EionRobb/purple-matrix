@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 
-PIDGIN_TREE_TOP ?= ../pidgin-2.10.12
+PIDGIN_TREE_TOP ?= ../pidgin-2.11.0
 WIN32_DEV_TOP ?= $(PIDGIN_TREE_TOP)/../win32-dev
 GLIB_TOP ?= $(WIN32_DEV_TOP)/gtk2-2.28
 JSON_GLIB_TOP ?= $(WIN32_DEV_TOP)/json-glib-0.14
@@ -10,7 +10,7 @@ MAKENSIS ?= makensis
 CC := $(WIN32_DEV_TOP)/mingw-4.7.2/bin/gcc.exe
 
 CFLAGS += -I$(PIDGIN_TREE_TOP) -I$(PIDGIN_TREE_TOP)/libpurple -I$(JSON_GLIB_TOP)/include/json-glib-1.0 -I$(GLIB_TOP)/include/glib-2.0 -I$(GLIB_TOP)/lib/glib-2.0/include -I$(HTTP_PARSER_TOP)
-LDLIBS += -L$(PIDGIN_TREE_TOP)/libpurple -lpurple -L$(JSON_GLIB_TOP)/lib -ljson-glib-1.0 -L$(GLIB_TOP)/bin -lglib-2.0-0 -lgobject-2.0-0
+LDLIBS += -L$(PIDGIN_TREE_TOP)/libpurple -lpurple -L$(JSON_GLIB_TOP)/lib -ljson-glib-1.0 -L$(GLIB_TOP)/bin -lglib-2.0-0 -lgobject-2.0-0 -lzlib1
 LDLIBS += -L$(HTTP_PARSER_TOP) -lhttp_parser -static-libgcc
 
 PLUGIN_DIR_PURPLE	=  "C:\Program Files (x86)\Pidgin\plugins"

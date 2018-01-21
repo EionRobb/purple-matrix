@@ -28,7 +28,7 @@
 /* libpurple */
 #include <debug.h>
 #include <ntlm.h>
-#include <libpurple/version.h>
+#include <version.h>
 
 #include "libmatrix.h"
 #include "matrix-json.h"
@@ -105,8 +105,10 @@ typedef struct {
     gchar *content_type;
     gboolean got_headers;
     JsonParser *json_parser;
-    const char *body;
+    char *body;
     size_t body_len;
+	gchar *content_encoding;
+	gchar *transfer_encoding;
 } MatrixApiResponseParserData;
 
 
@@ -130,7 +132,10 @@ static void _response_parser_data_free(MatrixApiResponseParserData *data)
     g_string_free(data->current_header_name, TRUE);
     g_string_free(data->current_header_value, TRUE);
     g_free(data->content_type);
-
+    g_free(data->content_encoding);
+    g_free(data->transfer_encoding);
+	g_free(data->body);
+	
     /* free the JSON parser, and all of the node structures */
     if(data -> json_parser)
         g_object_unref(data -> json_parser);
@@ -147,13 +152,19 @@ static void _handle_header_completed(MatrixApiResponseParserData *response_data)
         return;
     }
 
-    if(purple_debug_is_verbose())
+    //if(purple_debug_is_verbose())
         purple_debug_info("matrixprpl", "Handling API response header %s: %s\n",
                 name, value);
 
-    if(strcmp(name, "Content-Type") == 0) {
+    if(g_ascii_strcasecmp(name, "Content-Type") == 0) {
         g_free(response_data->content_type);
         response_data->content_type = g_strdup(value);
+    } else if(g_ascii_strcasecmp(name, "Content-Encoding") == 0) {
+        g_free(response_data->content_encoding);
+        response_data->content_encoding = g_strdup(value);
+    } else if(g_ascii_strcasecmp(name, "Transfer-Encoding") == 0) {
+        g_free(response_data->transfer_encoding);
+        response_data->transfer_encoding = g_strdup(value);
     }
 }
 
@@ -201,6 +212,119 @@ static int _handle_headers_complete(http_parser *http_parser)
 }
 
 
+
+#include <zlib.h>
+
+static gchar *_gunzip(const guchar *gzip_data, size_t *len_ptr)
+{
+	gsize gzip_data_len	= *len_ptr;
+	z_stream zstr;
+	int gzip_err = 0;
+	gchar *data_buffer;
+	gulong gzip_len = G_MAXUINT16;
+	GString *output_string = NULL;
+
+	data_buffer = g_new0(gchar, gzip_len);
+
+	zstr.next_in = NULL;
+	zstr.avail_in = 0;
+	zstr.zalloc = Z_NULL;
+	zstr.zfree = Z_NULL;
+	zstr.opaque = 0;
+	gzip_err = inflateInit2(&zstr, MAX_WBITS+32);
+	if (gzip_err != Z_OK)
+	{
+		g_free(data_buffer);
+		purple_debug_error("matrixprpl", "no built-in gzip support in zlib\n");
+		return NULL;
+	}
+	
+	zstr.next_in = (Bytef *)gzip_data;
+	zstr.avail_in = gzip_data_len;
+	
+	zstr.next_out = (Bytef *)data_buffer;
+	zstr.avail_out = gzip_len;
+	
+	gzip_err = inflate(&zstr, Z_SYNC_FLUSH);
+
+	if (gzip_err == Z_DATA_ERROR)
+	{
+		inflateEnd(&zstr);
+		inflateInit2(&zstr, -MAX_WBITS);
+		if (gzip_err != Z_OK)
+		{
+			g_free(data_buffer);
+			purple_debug_error("matrixprpl", "Cannot decode gzip header\n");
+			return NULL;
+		}
+		zstr.next_in = (Bytef *)gzip_data;
+		zstr.avail_in = gzip_data_len;
+		zstr.next_out = (Bytef *)data_buffer;
+		zstr.avail_out = gzip_len;
+		gzip_err = inflate(&zstr, Z_SYNC_FLUSH);
+	}
+	output_string = g_string_new("");
+	while (gzip_err == Z_OK)
+	{
+		//append data to buffer
+		output_string = g_string_append_len(output_string, data_buffer, gzip_len - zstr.avail_out);
+		//reset buffer pointer
+		zstr.next_out = (Bytef *)data_buffer;
+		zstr.avail_out = gzip_len;
+		gzip_err = inflate(&zstr, Z_SYNC_FLUSH);
+	}
+	if (gzip_err == Z_STREAM_END)
+	{
+		output_string = g_string_append_len(output_string, data_buffer, gzip_len - zstr.avail_out);
+	} else {
+		purple_debug_error("matrixprpl", "gzip inflate error\n");
+	}
+	inflateEnd(&zstr);
+
+	g_free(data_buffer);	
+
+	if (len_ptr)
+		*len_ptr = output_string->len;
+
+	return g_string_free(output_string, FALSE);
+}
+
+
+static int _handle_message_complete(http_parser *http_parser)
+{
+    MatrixApiResponseParserData *response_data = http_parser->data;
+	GError *err = NULL;
+	
+    if(purple_debug_is_verbose())
+        purple_debug_info("matrixprpl", "Handling API response body %.*s\n",
+                (int)response_data->body_len, response_data->body);
+
+	if(response_data->content_encoding && strcmp(response_data->content_encoding, "gzip") == 0) {
+		size_t length = response_data->body_len;
+		gchar *temp = _gunzip((const guchar *)response_data->body, &length);
+		
+		if (temp) {
+			g_free(response_data->body);
+			response_data->body = temp;
+			response_data->body_len = length;
+		}
+	}
+				
+    if(response_data->content_type && strcmp(response_data->content_type, "application/json") == 0) {
+        if(!json_parser_load_from_data(response_data->json_parser, response_data->body, response_data->body_len,
+                &err)) {
+            purple_debug_info("matrixprpl", "unable to parse JSON: %s\n",
+                    err->message);
+            g_error_free(err);
+			return 1;
+        }
+    }
+	
+    return 0;
+}
+
+
+
 /**
  * callback from the http parser which handles the message body
  */
@@ -208,27 +332,12 @@ static int _handle_body(http_parser *http_parser, const char *at,
         size_t length)
 {
     MatrixApiResponseParserData *response_data = http_parser->data;
-    GError *err = NULL;
-
-    if(purple_debug_is_verbose())
-        purple_debug_info("matrixprpl", "Handling API response body %.*s\n",
-                (int)length, at);
-
-    if(strcmp(response_data->content_type, "application/json") == 0) {
-        if(!json_parser_load_from_data(response_data -> json_parser, at, length,
-                &err)) {
-            purple_debug_info("matrixprpl", "unable to parse JSON: %s\n",
-                    err->message);
-            g_error_free(err);
-            return 1;
-        }
-    } else {
-        /* Well if it's not JSON perhaps the callback is expecting to
-         * handle it itself, e.g. for an image.
-         */
-        response_data->body = at;
-        response_data->body_len = length;
-    }
+    
+	response_data->body = g_realloc(response_data->body, response_data->body_len + length + 1);
+	memcpy(response_data->body + response_data->body_len, at, length + 1);
+	
+	response_data->body_len += length;
+	
     return 0;
 }
 
@@ -270,6 +379,7 @@ static void matrix_api_complete(PurpleUtilFetchUrlData *url_data,
         http_parser_settings.on_header_value = _handle_header_value;
         http_parser_settings.on_headers_complete = _handle_headers_complete;
         http_parser_settings.on_body = _handle_body;
+        http_parser_settings.on_message_complete = _handle_message_complete;
 
         http_parser_init(&http_parser, HTTP_RESPONSE);
         http_parser.data = response_data;
@@ -437,6 +547,8 @@ static GString *_build_request(PurpleAccount *acct, const gchar *url,
     g_string_append(request_str, "Connection: close\r\n");
     g_string_append_printf(request_str, "Content-Length: %" G_GSIZE_FORMAT "\r\n",
             extra_len + (body == NULL ? 0 : strlen(body)));
+	
+    g_string_append(request_str, "Accept-Encoding: gzip\r\n");
 
     if(using_http_proxy)
         _add_proxy_auth_headers(request_str, gpi);
@@ -668,7 +780,7 @@ MatrixApiRequestData *matrix_api_sync(MatrixConnectionData *conn,
      * memory? But it's JSON
      */
     fetch_data = matrix_api_start(url->str, "GET", NULL, conn, callback,
-            error_callback, bad_response_callback, user_data, 10*1024*1024);
+            error_callback, bad_response_callback, user_data, 40*1024*1024);
     g_string_free(url, TRUE);
     
     return fetch_data;
@@ -995,7 +1107,7 @@ MatrixApiRequestData *matrix_api_get_room_state(MatrixConnectionData *conn,
     purple_debug_info("matrixprpl", "getting state for %s\n", room_id);
 
     fetch_data = matrix_api_start(url->str, NULL, conn, callback,
-            NULL, NULL, user_data, 10*1024*1024);
+            NULL, NULL, user_data, 40*1024*1024);
     g_string_free(url, TRUE);
 
     return fetch_data;
