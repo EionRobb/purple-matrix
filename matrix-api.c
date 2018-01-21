@@ -108,7 +108,6 @@ typedef struct {
     char *body;
     size_t body_len;
 	gchar *content_encoding;
-	gchar *transfer_encoding;
 } MatrixApiResponseParserData;
 
 
@@ -133,7 +132,6 @@ static void _response_parser_data_free(MatrixApiResponseParserData *data)
     g_string_free(data->current_header_value, TRUE);
     g_free(data->content_type);
     g_free(data->content_encoding);
-    g_free(data->transfer_encoding);
 	g_free(data->body);
 	
     /* free the JSON parser, and all of the node structures */
@@ -152,7 +150,7 @@ static void _handle_header_completed(MatrixApiResponseParserData *response_data)
         return;
     }
 
-    //if(purple_debug_is_verbose())
+    if(purple_debug_is_verbose())
         purple_debug_info("matrixprpl", "Handling API response header %s: %s\n",
                 name, value);
 
@@ -162,9 +160,6 @@ static void _handle_header_completed(MatrixApiResponseParserData *response_data)
     } else if(g_ascii_strcasecmp(name, "Content-Encoding") == 0) {
         g_free(response_data->content_encoding);
         response_data->content_encoding = g_strdup(value);
-    } else if(g_ascii_strcasecmp(name, "Transfer-Encoding") == 0) {
-        g_free(response_data->transfer_encoding);
-        response_data->transfer_encoding = g_strdup(value);
     }
 }
 
