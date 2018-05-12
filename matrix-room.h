@@ -31,6 +31,7 @@
 #include <json-glib/json-glib.h>
 
 #include "libmatrix.h"
+#include "roomlist.h"
 
 struct _PurpleConversation;
 struct _PurpleConnection;
@@ -77,7 +78,7 @@ void matrix_room_handle_timeline_event(struct _PurpleConversation *conv,
 /**
  * Sends a typing notification in a room with a 25s timeout
  */
-void matrix_room_send_typing(struct _PurpleConversation *conv, gboolean typing);
+void matrix_room_send_typing(PurpleConversation *conv, gboolean typing);
         
 /**
  * Send a message in a room
@@ -94,5 +95,11 @@ void matrix_room_send_message(struct _PurpleConversation *conv,
 gchar *matrix_room_displayname_to_userid(struct _PurpleConversation *conv,
         const gchar *who);
 
+/**
+ * Download the list of publically available rooms
+ *
+ * @returns a PurpleRoomlist struct
+ */
+PurpleRoomlist *matrixprpl_roomlist_get_list(PurpleConnection *pc);
 
 #endif

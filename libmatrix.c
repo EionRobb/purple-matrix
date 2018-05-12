@@ -103,10 +103,10 @@ void matrixprpl_login(PurpleAccount *acct)
     matrix_connection_new(pc);
     matrix_connection_start_login(pc);
     
+	pc->flags |= PURPLE_CONNECTION_HTML;
+	
     purple_signal_connect(purple_conversations_get_handle(), "chat-conversation-typing", 
         acct, PURPLE_CALLBACK(matrixprpl_conv_send_typing), pc);
-    
-    pc->flags |= PURPLE_CONNECTION_HTML;
 }
 
 
@@ -331,7 +331,7 @@ static PurplePluginProtocolInfo prpl_info =
     matrixprpl_get_cb_real_name,           /* get_cb_real_name */
     NULL,                                  /* set_chat_topic */
     NULL,                                  /* find_blist_chat */
-    NULL,                                  /* roomlist_get_list */
+    matrixprpl_roomlist_get_list,          /* roomlist_get_list */
     NULL,                                  /* roomlist_cancel */
     NULL,                                  /* roomlist_expand_category */
     NULL,                                  /* can_receive_file */
