@@ -307,6 +307,7 @@ static int _handle_body(http_parser *http_parser, const char *at,
     return 0;
 }
 
+
 /**
  * callback from the http parser after all chunks have arrived.
  */
@@ -334,23 +335,6 @@ static int _handle_message_complete(http_parser *http_parser)
             return 1;
         }
     }
-	
-    return 0;
-}
-
-
-/**
- * callback from the http parser which handles the message body
- */
-static int _handle_body(http_parser *http_parser, const char *at,
-        size_t length)
-{
-    MatrixApiResponseParserData *response_data = http_parser->data;
-    
-	response_data->body = g_realloc(response_data->body, response_data->body_len + length + 1);
-	memcpy(response_data->body + response_data->body_len, at, length + 1);
-	
-	response_data->body_len += length;
 	
     return 0;
 }
