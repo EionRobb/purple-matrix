@@ -151,8 +151,8 @@ static GString *canonical_json_value(JsonNode *node, GString *result)
             break;
 
         default:
-            fprintf(stderr, "%s: Unknown value type %zd\n", __func__,
-                    (size_t)vt);
+            fprintf(stderr, "%s: Unknown value type %" G_GSIZE_FORMAT "\n", __func__,
+                    (gsize)vt);
             /* TODO: Other value types */
             g_assert_not_reached();
     }
