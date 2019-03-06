@@ -1,5 +1,25 @@
 # purple-matrix [![#purple on matrix.org](https://img.shields.io/matrix/purple:matrix.org.svg?label=%23purple%3Amatrix.org&logo=matrix&server_fqdn=matrix.org)](https://matrix.to/#/#purple:matrix.org)
 
+
+This is a fork of the main plugin at https://github.com/matrix-org/purple-matrix but with additional fixes and compilation options.
+
+Changes:
+* Supports Windows
+** Download a non-E2E version from [here](https://eion.robbmob.com/libmatrix.dll)
+** Download E2E version from [here](https://eion.robbmob.com/libmatrix-e2e.dll) (and [libolm.dll](https://eion.robbmob.com/libolm.dll) that needs to go into the Pidgin (not plugins) folder)
+* Supports gzip compression to help the "Invalid response" error
+* Supports larger response sizes from the server for large images and for the "invalid response" error
+
+
+
+
+
+
+
+
+-----
+
+
 This project is a plugin for
 [libpurple](https://developer.pidgin.im/wiki/WhatIsLibpurple) which adds the
 ability to communicate with [matrix.org](http://matrix.org) homeservers to any
@@ -14,7 +34,6 @@ joining rooms you are invited to by other users.
 The following are not yet supported:
  * Creating new rooms (and one-to-one chats)
  * Presence indication
- * Typing indication
  * Videos/rich text in messages
  * Account registration
  * Room topics
