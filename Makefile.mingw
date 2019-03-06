@@ -14,10 +14,11 @@ LDLIBS += -L$(PIDGIN_TREE_TOP)/libpurple -lpurple -L$(JSON_GLIB_TOP)/lib -ljson-
 LDLIBS += -L$(HTTP_PARSER_TOP) -lhttp_parser -static-libgcc
 
 ifndef MATRIX_NO_E2E
-OLM_TOP ?= $(WIN32_DEV_TOP)/olm
-GCRYPT_TOP ?= $(WIN32_DEV_TOP)/libgcrypt
-CFLAGS += -I$(OLM_TOP)/include -I$(GCRYPT_TOP)/src
-LDLIBS += -L$(OLM_TOP)/build -lolm -L$(GCRYPT_TOP)/bin -lgcrypt
+OLM_TOP ?= $(WIN32_DEV_TOP)/olm-3.0.0
+GCRYPT_TOP ?= $(WIN32_DEV_TOP)/libgcrypt-1.6.3
+GPGERROR_TOP ?= $(WIN32_DEV_TOP)/libgpg-error-1.12-2
+CFLAGS += -I$(OLM_TOP)/include -I$(GCRYPT_TOP)/include -I$(GPGERROR_TOP)/include
+LDLIBS += -L$(OLM_TOP)/build -lolm -L$(GCRYPT_TOP)/bin -lgcrypt -L. -lsqlite3
 endif
 
 

@@ -794,16 +794,18 @@ static int get_id_keys(PurpleConnection *pc, OlmAccount *account, gchar ***algor
     guint n_keys = json_object_get_size(id_body);
     *algorithms = g_new(gchar *, n_keys);
     *keys = g_new(gchar *, n_keys);
-    JsonObjectIter iter;
+    GList *iter, *iter_start;
     const gchar *key_algo;
-    JsonNode *key_node;
     guint i = 0;
-    json_object_iter_init(&iter, id_body);
-    while (json_object_iter_next(&iter, &key_algo, &key_node)) {
+	iter_start = json_object_get_members(id_body);
+	for (iter = iter_start; iter != NULL; iter = iter->next)
+	{
+		key_algo = iter->data;
         (*algorithms)[i] = g_strdup(key_algo);
         (*keys)[i] = g_strdup(matrix_json_object_get_string_member(id_body, key_algo));
         i++;
     }
+	g_list_free(iter_start);
 
     g_free(id_keys);
     g_object_unref(json_parser);
@@ -877,21 +879,23 @@ static int send_one_time_keys(MatrixConnectionData *conn, size_t n_keys)
 
     JsonNode *olm_1tk_root = json_parser_get_root(json_parser);
     JsonObject *olm_1tk_obj = matrix_json_node_get_object(olm_1tk_root);
-    JsonObjectIter algo_iter;
-    json_object_iter_init(&algo_iter, olm_1tk_obj);
+    GList *algo_iter, *algo_iter_start;
     const gchar *keys_algo;
-    JsonNode *keys_node;
-    while (json_object_iter_next(&algo_iter, &keys_algo, &keys_node)) {
-        /* We're expecting keys_algo to be "curve25519" and keys_node to be an
+	algo_iter_start = json_object_get_members(olm_1tk_obj);
+	for (algo_iter = algo_iter_start; algo_iter != NULL; algo_iter = algo_iter->next)
+	{
+		keys_algo = algo_iter->data;
+        /* We're expecting keys_algo to be "curve25519" and keys_obj to be an
          * object with a set of keys.
          */
-        JsonObjectIter keys_iter;
-        JsonObject *keys_obj = matrix_json_node_get_object(keys_node);
-        json_object_iter_init(&keys_iter, keys_obj);
+        GList *keys_iter, *keys_iter_start;
+        JsonObject *keys_obj = matrix_json_object_get_object_member(olm_1tk_obj, keys_algo);
         const gchar *key_id;
-        JsonNode *key_node;
-        while (json_object_iter_next(&keys_iter, &key_id, &key_node)) {
-            const gchar *key_string = matrix_json_node_get_string(key_node);
+		keys_iter_start = json_object_get_members(keys_obj);
+		for (keys_iter = keys_iter_start; keys_iter != NULL; keys_iter = keys_iter->next)
+		{
+			key_id = keys_iter->data;
+            const gchar *key_string = matrix_json_object_get_string_member(keys_obj, key_id);
 
             JsonObject *signed_key = json_object_new();
             json_object_set_string_member(signed_key, "key", key_string);
@@ -906,7 +910,9 @@ static int send_one_time_keys(MatrixConnectionData *conn, size_t n_keys)
                                                signed_key_name, signed_key);
             g_free(signed_key_name);
         }
+		g_list_free(keys_iter_start);
     }
+	g_list_free(algo_iter_start);
 
     matrix_api_upload_keys(conn, NULL, otk_json,
         key_upload_callback,
@@ -938,20 +944,22 @@ void matrix_e2e_handle_sync_key_counts(PurpleConnection *pc, JsonObject *count_o
     size_t to_create = max_keys;
 
     if (!force_send) {
-        JsonObjectIter iter;
+        GList *iter, *iter_start;
         const gchar *key_algo;
-        JsonNode *key_count_node;
-        json_object_iter_init(&iter, count_object);
-        while (json_object_iter_next(&iter, &key_algo, &key_count_node)) {
+		iter_start = json_object_get_members(count_object);
+		for (iter = iter_start; iter != NULL; iter = iter->next)
+		{
+			key_algo = iter->data;
             valid_counts = TRUE;
-            gint64 count = matrix_json_node_get_int(key_count_node);
+            gint64 count = matrix_json_object_get_int_member(count_object, key_algo);
             if (count < max_keys / 2) {
                 to_create = (max_keys / 2) - count;
                 need_to_send = TRUE;
             }
-            purple_debug_info("matrixprpl", "%s: %s: %ld\n",
+            purple_debug_info("matrixprpl", "%s: %s: %" G_GINT64_FORMAT "\n",
                            __func__, key_algo, count);
         }
+		g_list_free(iter_start);
     }
 
     need_to_send |= !valid_counts;
@@ -1448,8 +1456,8 @@ static void decrypt_olm(PurpleConnection *pc, MatrixConnectionData *conn, JsonOb
 
     gint64 type = matrix_json_node_get_int(type_node);
     purple_debug_info("matrixprpl",
-                      "%s: Type %zd olm encrypted message from %s\n",
-                      __func__, (size_t)type, cevent_sender);
+                      "%s: Type %" G_GINT64_FORMAT " olm encrypted message from %s\n",
+                      __func__, type, cevent_sender);
     if (!type) {
         /* A 'prekey' message to establish an Olm session */
         const gchar *cevent_body;
@@ -1520,7 +1528,7 @@ static void decrypt_olm(PurpleConnection *pc, MatrixConnectionData *conn, JsonOb
         plaintext[pt_len] = '\0';
         handle_decrypted_olm(pc, conn, cevent_sender, sender_key, plaintext);
     } else {
-        purple_debug_info("matrixprpl", "%s: Type %zd olm\n", __func__, type);
+        purple_debug_info("matrixprpl", "%s: Type %" G_GINT64_FORMAT " olm\n", __func__, type);
     }
     if (plaintext) {
         clear_mem(plaintext, max_plaintext_len);
@@ -1680,15 +1688,15 @@ JsonParser *matrix_e2e_decrypt_room(PurpleConversation *conv,
 
     if (decrypt_len > maxlen) {
         purple_debug_info("matrixprpl",
-                "%s: olm_group_decrypt len=%zd max was supposed to be %zd\n",
+                "%s: olm_group_decrypt len=%" G_GSIZE_FORMAT " max was supposed to be %" G_GSIZE_FORMAT "\n",
                 __func__, decrypt_len, maxlen);
         goto out;
     }
     // TODO: Stash index somewhere - supposed to check it for validity
     plaintext[decrypt_len] = '\0';
     purple_debug_info("matrixprpl",
-                      "%s: Decrypted megolm event as '%s' index=%zd\n",
-                      __func__, plaintext, (size_t)index);
+                      "%s: Decrypted megolm event as '%s' index=%" G_GSIZE_FORMAT "\n",
+                      __func__, plaintext, (gsize)index);
 
     plaintext_parser = json_parser_new();
     GError *err = NULL;
@@ -1767,7 +1775,7 @@ gboolean matrix_e2e_parse_media_decrypt_info(MatrixMediaCryptInfo **crypt,
 
     if (k_len != 32 || iv_len != 16 || sha256_len != 32) {
         purple_debug_info("matrixprpl", "media decrypt: Bad base64 decode:"
-                " iv: %s=%zd sha256: %s=%zd k: %s=%zd\n",
+                " iv: %s=%" G_GSIZE_FORMAT " sha256: %s=%" G_GSIZE_FORMAT " k: %s=%" G_GSIZE_FORMAT "\n",
                 iv_str, iv_len, sha256_str, sha256_len,  k_str, k_len);
         g_free(decoded_k);
         g_free(decoded_iv);
@@ -1819,7 +1827,7 @@ const char *matrix_e2e_decrypt_media(MatrixMediaCryptInfo *crypt,
         goto err;
     }
     *out = g_malloc(inlen); /* Do I need to round this to block len? */
-    gcry_cipher_final(cipher_hd);
+    //gcry_cipher_final(cipher_hd);
     gcry_err = gcry_cipher_decrypt(cipher_hd, *out, inlen, in, inlen);
     if (gcry_err) {
         g_free(*out);
