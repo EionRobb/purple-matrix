@@ -18,7 +18,8 @@ OLM_TOP ?= $(WIN32_DEV_TOP)/olm-3.0.0
 GCRYPT_TOP ?= $(WIN32_DEV_TOP)/libgcrypt-1.6.3
 GPGERROR_TOP ?= $(WIN32_DEV_TOP)/libgpg-error-1.12-2
 CFLAGS += -I$(OLM_TOP)/include -I$(GCRYPT_TOP)/include -I$(GPGERROR_TOP)/include
-LDLIBS += -L$(OLM_TOP)/build -lolm -L$(GCRYPT_TOP)/bin -lgcrypt -L. -lsqlite3
+LDLIBS += -L$(OLM_TOP)/build -lolm -L$(GCRYPT_TOP)/bin -lgcrypt-20 -L. -lsqlite3  -static-libstdc++
+LINK.o   = $(WIN32_DEV_TOP)/mingw-4.7.2/bin/g++.exe $(LDFLAGS) $(TARGET_ARCH)
 endif
 
 

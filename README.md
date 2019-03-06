@@ -5,8 +5,8 @@ This is a fork of the main plugin at https://github.com/matrix-org/purple-matrix
 
 Changes:
 * Supports Windows
-** Download a non-E2E version from [here](https://eion.robbmob.com/libmatrix.dll)
-** Download E2E version from [here](https://eion.robbmob.com/libmatrix-e2e.dll) (and [libolm.dll](https://eion.robbmob.com/libolm.dll) that needs to go into the Pidgin (not plugins) folder)
+* Download a non-E2E version from [here](https://eion.robbmob.com/libmatrix.dll)
+* Download E2E version from [here](https://eion.robbmob.com/libmatrix-e2e.dll)
 * Supports gzip compression to help the "Invalid response" error
 * Supports larger response sizes from the server for large images and for the "invalid response" error
 
