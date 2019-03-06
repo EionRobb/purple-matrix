@@ -9,9 +9,11 @@ MAKENSIS ?= makensis
 
 CC := $(WIN32_DEV_TOP)/mingw-4.7.2/bin/gcc.exe
 
-CFLAGS += -I$(PIDGIN_TREE_TOP) -I$(PIDGIN_TREE_TOP)/libpurple -I$(JSON_GLIB_TOP)/include/json-glib-1.0 -I$(GLIB_TOP)/include -I$(GLIB_TOP)/include/glib-2.0 -I$(GLIB_TOP)/lib/glib-2.0/include -I$(HTTP_PARSER_TOP)  -I.
+CFLAGS += -I$(PIDGIN_TREE_TOP) -I$(PIDGIN_TREE_TOP)/libpurple -I$(JSON_GLIB_TOP)/include/json-glib-1.0 -I$(GLIB_TOP)/include -I$(GLIB_TOP)/include/glib-2.0 -I$(GLIB_TOP)/lib/glib-2.0/include -I$(HTTP_PARSER_TOP)  -I. -g -ggdb -O2
 LDLIBS += -L$(PIDGIN_TREE_TOP)/libpurple -lpurple -L$(JSON_GLIB_TOP)/lib -ljson-glib-1.0 -L$(GLIB_TOP)/bin -lglib-2.0-0 -lgobject-2.0-0 -lzlib1
 LDLIBS += -L$(HTTP_PARSER_TOP) -lhttp_parser -static-libgcc
+
+TARGET = libmatrix.dll
 
 ifndef MATRIX_NO_E2E
 OLM_TOP ?= $(WIN32_DEV_TOP)/olm-3.0.0
@@ -20,13 +22,12 @@ GPGERROR_TOP ?= $(WIN32_DEV_TOP)/libgpg-error-1.12-2
 CFLAGS += -I$(OLM_TOP)/include -I$(GCRYPT_TOP)/include -I$(GPGERROR_TOP)/include
 LDLIBS += -L$(OLM_TOP)/build -lolm -L$(GCRYPT_TOP)/bin -lgcrypt-20 -L. -lsqlite3  -static-libstdc++
 LINK.o   = $(WIN32_DEV_TOP)/mingw-4.7.2/bin/g++.exe $(LDFLAGS) $(TARGET_ARCH)
+TARGET = libmatrix-e2e.dll
 endif
 
 
 PLUGIN_DIR_PURPLE	=  "C:\Program Files (x86)\Pidgin\plugins"
 DATA_ROOT_DIR_PURPLE	=  "C:\Program Files (x86)\Pidgin"
-
-TARGET = libmatrix.dll
 
 PLUGIN_VERSION = $(shell grep -Po "DISPLAY_VERSION \"[^\"]*" libmatrix.h | sed "s/DISPLAY_VERSION \"//")
 
