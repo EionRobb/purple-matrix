@@ -35,6 +35,10 @@
 #include "olm/olm.h"
 #include <gcrypt.h>
 
+#ifdef _WIN32
+#include <Wincrypt.h>
+#endif
+
 struct _MatrixOlmSession;
 
 struct _MatrixE2EData {
@@ -108,6 +112,7 @@ static void clear_mem(volatile char *data, size_t len)
  */
 static void *get_random(size_t n)
 {
+#ifndef _WIN32
     FILE *urandom = fopen("/dev/urandom", "rb");
     if (!urandom) {
         return NULL;
@@ -118,6 +123,21 @@ static void *get_random(size_t n)
         buffer = NULL;
     }
     fclose(urandom);
+	
+#else
+	static HCRYPTPROV hCryptoServiceProvider = 0;
+	if (hCryptoServiceProvider == 0) {
+		/* Crypto init */
+		CryptAcquireContextA(&hCryptoServiceProvider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT);
+	}
+    unsigned char *buffer = g_new(unsigned char, n);
+	if (!CryptGenRandom(hCryptoServiceProvider, n, buffer)) {
+        g_free(buffer);
+        buffer = NULL;
+	}
+	
+#endif
+
     return buffer;
 }
 
